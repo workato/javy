@@ -1,6 +1,6 @@
 use std::{
     collections::BinaryHeap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -11,12 +11,113 @@ use crate::{
 };
 use anyhow::{anyhow, Result};
 
+pub struct TimersRuntime {
+    queue: Arc<Mutex<TimerQueue>>,
+}
+
+impl TimersRuntime {
+    pub fn new() -> Self {
+        Self {
+            queue: Arc::new(Mutex::new(TimerQueue::new())),
+        }
+    }
+
+    /// Register timer functions on the global object
+    pub fn register_globals(&self, this: Ctx<'_>) -> Result<()> {
+        let globals = this.globals();
+
+        let queue = self.queue.clone();
+        globals.set(
+            "setTimeout",
+            Function::new(
+                this.clone(),
+                MutFn::new(move |cx, args| {
+                    let (cx, args) = hold_and_release!(cx, args);
+                    set_timeout(&queue, hold!(cx.clone(), args))
+                        .map_err(|e| to_js_error(cx, e))
+                }),
+            )?,
+        )?;
+
+        let queue = self.queue.clone();
+        globals.set(
+            "clearTimeout",
+            Function::new(
+                this.clone(),
+                MutFn::new(move |cx, args| {
+                    let (cx, args) = hold_and_release!(cx, args);
+                    clear_timeout(&queue, hold!(cx.clone(), args))
+                        .map_err(|e| to_js_error(cx, e))
+                }),
+            )?,
+        )?;
+
+        let queue = self.queue.clone();
+        globals.set(
+            "setInterval",
+            Function::new(
+                this.clone(),
+                MutFn::new(move |cx, args| {
+                    let (cx, args) = hold_and_release!(cx, args);
+                    set_interval(&queue, hold!(cx.clone(), args))
+                        .map_err(|e| to_js_error(cx, e))
+                }),
+            )?,
+        )?;
+
+        let queue = self.queue.clone();
+        globals.set(
+            "clearInterval",
+            Function::new(
+                this.clone(),
+                MutFn::new(move |cx, args| {
+                    let (cx, args) = hold_and_release!(cx, args);
+                    clear_interval(&queue, hold!(cx.clone(), args))
+                        .map_err(|e| to_js_error(cx, e))
+                }),
+            )?,
+        )?;
+
+        Ok(())
+    }
+
+    /// Process expired timers - should be called by the event loop
+    pub fn process_timers(&self, ctx: Ctx<'_>) -> Result<()> {
+        let mut queue = self.queue.lock().unwrap();
+        let expired_timers = queue.get_expired_timers();
+
+        // Reschedule intervals before releasing the lock
+        for timer in &expired_timers {
+            if let Some(interval_ms) = timer.interval_ms {
+                queue.add_timer(interval_ms, true, timer.callback.clone(), Some(timer.id));
+            }
+        }
+
+        drop(queue); // Release lock before executing JavaScript
+
+        // Execute all timer callbacks (both timeouts and intervals)
+        for timer in &expired_timers {
+            if let Err(e) = ctx.eval::<(), _>(timer.callback.as_str()) {
+                eprintln!("Timer callback error: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if there are pending timers
+    pub fn has_pending_timers(&self) -> bool {
+        let queue = self.queue.lock().unwrap();
+        queue.has_pending_timers()
+    }
+}
+
 /// Timer entry in the timer queue
 #[derive(Debug, Clone)]
 struct Timer {
     id: u32,
-    fire_time: u64, // milliseconds since UNIX epoch
-    callback: String, // JavaScript code to execute
+    fire_time: u64,           // milliseconds since UNIX epoch
+    callback: String,         // JavaScript code to execute
     interval_ms: Option<u32>, // If Some(), this is a repeating timer
 }
 
@@ -56,64 +157,30 @@ impl TimerQueue {
         }
     }
 
-    fn add_timer(&mut self, delay_ms: u32, callback: String) -> u32 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+    fn add_timer(
+        &mut self,
+        delay_ms: u32,
+        repeat: bool,
+        callback: String,
+        reuse_id: Option<u32>,
+    ) -> u32 {
+        let now = Self::now();
 
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = reuse_id.unwrap_or_else(|| {
+            let id = self.next_id;
+            self.next_id += 1;
+            id
+        });
 
         let timer = Timer {
             id,
-            // For delay=0, set fire_time to current time to ensure immediate availability
-            fire_time: if delay_ms == 0 { now } else { now + delay_ms as u64 },
+            fire_time: now + delay_ms as u64,
             callback,
-            interval_ms: None,
+            interval_ms: if repeat { Some(delay_ms) } else { None },
         };
 
         self.timers.push(timer);
         id
-    }
-
-    fn add_interval(&mut self, delay_ms: u32, callback: String) -> u32 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
-        let id = self.next_id;
-        self.next_id += 1;
-
-        let timer = Timer {
-            id,
-            // For delay=0, set fire_time to current time to ensure immediate availability
-            fire_time: if delay_ms == 0 { now } else { now + delay_ms as u64 },
-            callback,
-            interval_ms: Some(delay_ms),
-        };
-
-        self.timers.push(timer);
-        id
-    }
-
-    fn reschedule_interval(&mut self, timer: Timer) {
-        if let Some(interval_ms) = timer.interval_ms {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
-
-            let new_timer = Timer {
-                id: timer.id,
-                fire_time: if interval_ms == 0 { now } else { now + interval_ms as u64 },
-                callback: timer.callback,
-                interval_ms: timer.interval_ms,
-            };
-
-            self.timers.push(new_timer);
-        }
     }
 
     fn remove_timer(&mut self, timer_id: u32) -> bool {
@@ -123,13 +190,8 @@ impl TimerQueue {
     }
 
     fn get_expired_timers(&mut self) -> Vec<Timer> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
+        let now = Self::now();
         let mut expired = Vec::new();
-
         while let Some(timer) = self.timers.peek() {
             if timer.fire_time <= now {
                 expired.push(self.timers.pop().unwrap());
@@ -144,108 +206,16 @@ impl TimerQueue {
     fn has_pending_timers(&self) -> bool {
         !self.timers.is_empty()
     }
-}
 
-pub struct TimersRuntime {
-    queue: Arc<Mutex<TimerQueue>>,
-}
-
-impl TimersRuntime {
-    pub fn new() -> Self {
-        Self {
-            queue: Arc::new(Mutex::new(TimerQueue::new())),
-        }
-    }
-
-    /// Register timer functions on the global object
-    pub fn register_globals(&self, this: Ctx<'_>) -> Result<()> {
-        let globals = this.globals();
-
-        let queue = self.queue.clone();
-        globals.set(
-            "setTimeout",
-            Function::new(
-                this.clone(),
-                MutFn::new(move |cx, args| {
-                    let (cx, args) = hold_and_release!(cx, args);
-                    set_timeout(queue.clone(),hold!(cx.clone(), args)).map_err(|e| to_js_error(cx, e))
-                }),
-            )?,
-        )?;
-
-        let queue = self.queue.clone();
-        globals.set(
-            "clearTimeout",
-            Function::new(
-                this.clone(),
-                MutFn::new(move |cx, args| {
-                    let (cx, args) = hold_and_release!(cx, args);
-                    clear_timeout(queue.clone(), hold!(cx.clone(), args)).map_err(|e| to_js_error(cx, e))
-                }),
-            )?,
-        )?;
-
-        let queue = self.queue.clone();
-        globals.set(
-            "setInterval",
-            Function::new(
-                this.clone(),
-                MutFn::new(move |cx, args| {
-                    let (cx, args) = hold_and_release!(cx, args);
-                    set_interval(queue.clone(), hold!(cx.clone(), args)).map_err(|e| to_js_error(cx, e))
-                }),
-            )?,
-        )?;
-
-        let queue = self.queue.clone();
-        globals.set(
-            "clearInterval",
-            Function::new(
-                this.clone(),
-                MutFn::new(move |cx, args| {
-                    let (cx, args) = hold_and_release!(cx, args);
-                    clear_interval(queue.clone(), hold!(cx.clone(), args)).map_err(|e| to_js_error(cx, e))
-                }),
-            )?,
-        )?;
-
-        Ok(())
-    }
-
-    /// Process expired timers - should be called by the event loop
-    pub fn process_timers(&self, ctx: Ctx<'_>) -> Result<()> {
-        let mut queue = self.queue.lock().unwrap();
-        let expired_timers = queue.get_expired_timers();
-
-        // Separate intervals that need rescheduling
-        let (intervals, timeouts): (Vec<_>, Vec<_>) = expired_timers.into_iter()
-            .partition(|timer| timer.interval_ms.is_some());
-
-        // Reschedule intervals before releasing the lock
-        for interval in &intervals {
-            queue.reschedule_interval(interval.clone());
-        }
-
-        drop(queue); // Release lock before executing JavaScript
-
-        // Execute all timer callbacks (both timeouts and intervals)
-        for timer in timeouts.into_iter().chain(intervals.into_iter()) {
-            if let Err(e) = ctx.eval::<(), _>(timer.callback.as_str()) {
-                eprintln!("Timer callback error: {}", e);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Check if there are pending timers
-    pub fn has_pending_timers(&self) -> bool {
-        let queue = self.queue.lock().unwrap();
-        queue.has_pending_timers()
+    fn now() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
     }
 }
 
-fn set_timeout<'js>(queue: Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<Value<'js>> {
+fn set_timeout<'js>(queue: &Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<Value<'js>> {
     let (ctx, args) = args.release();
     let args = args.into_inner();
 
@@ -270,13 +240,13 @@ fn set_timeout<'js>(queue: Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<Va
     };
 
     let mut queue = queue.lock().unwrap();
-    let timer_id = queue.add_timer(delay_ms, callback_str);
+    let timer_id = queue.add_timer(delay_ms, false, callback_str, None);
     drop(queue);
 
     Ok(Value::new_int(ctx, timer_id as i32))
 }
 
-fn clear_timeout<'js>(queue: Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<Value<'js>> {
+fn clear_timeout<'js>(queue: &Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<Value<'js>> {
     let (ctx, args) = args.release();
     let args = args.into_inner();
 
@@ -293,7 +263,7 @@ fn clear_timeout<'js>(queue: Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<
     Ok(Value::new_undefined(ctx))
 }
 
-fn set_interval<'js>(queue: Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<Value<'js>> {
+fn set_interval<'js>(queue: &Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<Value<'js>> {
     let (ctx, args) = args.release();
     let args = args.into_inner();
 
@@ -318,13 +288,13 @@ fn set_interval<'js>(queue: Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<V
     };
 
     let mut queue = queue.lock().unwrap();
-    let timer_id = queue.add_interval(interval_ms, callback_str);
+    let timer_id = queue.add_timer(interval_ms, true, callback_str, None);
     drop(queue);
 
     Ok(Value::new_int(ctx, timer_id as i32))
 }
 
-fn clear_interval<'js>(queue: Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<Value<'js>> {
+fn clear_interval<'js>(queue: &Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<Value<'js>> {
     let (ctx, args) = args.release();
     let args = args.into_inner();
 
@@ -352,9 +322,9 @@ mod tests {
         let mut queue = TimerQueue::new();
 
         // Add some timers
-        let id1 = queue.add_timer(100, "console.log('timer1')".to_string());
-        let id2 = queue.add_timer(50, "console.log('timer2')".to_string());
-        let id3 = queue.add_timer(200, "console.log('timer3')".to_string());
+        let id1 = queue.add_timer(100, false, "console.log('timer1')".to_string(), None);
+        let id2 = queue.add_timer(50, false, "console.log('timer2')".to_string(), None);
+        let id3 = queue.add_timer(200, false, "console.log('timer3')".to_string(), None);
 
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
@@ -418,7 +388,9 @@ mod tests {
         let runtime = Runtime::new(config)?;
         runtime.context().with(|cx| {
             // Create a timer and clear it
-            let result: Value = cx.eval("const id = setTimeout('console.log(\"test\")', 1000); clearTimeout(id); id")?;
+            let result: Value = cx.eval(
+                "const id = setTimeout('console.log(\"test\")', 1000); clearTimeout(id); id",
+            )?;
             let timer_id = result.as_number().unwrap() as i32;
             assert!(timer_id > 0);
 
@@ -435,9 +407,12 @@ mod tests {
 
         // Use a unique variable name to avoid interference between tests
         let unique_var = format!("timerExecuted_{}", std::process::id());
-        let timer_code = format!("globalThis.{} = false; setTimeout('globalThis.{} = true', 0)", unique_var, unique_var);
 
         runtime.context().with(|cx| {
+            let timer_code = format!(
+                "globalThis.{} = false; setTimeout('globalThis.{} = true', 0)",
+                unique_var, unique_var
+            );
             cx.eval::<(), _>(timer_code.as_str())?;
             Ok::<_, Error>(())
         })?;
@@ -467,10 +442,12 @@ mod tests {
         // Use unique variable name to avoid interference between tests
         let unique_var = format!("delayedTimer_{}", std::process::id());
 
-        // Set a timer with a delay that shouldn't fire immediately
-        let timer_code = format!("globalThis.{} = false; setTimeout('globalThis.{} = true', 1000)", unique_var, unique_var);
-
         runtime.context().with(|cx| {
+            // Set a timer with a delay that shouldn't fire immediately
+            let timer_code = format!(
+                "globalThis.{} = false; setTimeout('globalThis.{} = true', 1000)",
+                unique_var, unique_var
+            );
             cx.eval::<(), _>(timer_code.as_str())?;
             Ok::<_, Error>(())
         })?;
@@ -502,16 +479,18 @@ mod tests {
 
         runtime.context().with(|cx| {
             // Set multiple timers
-            let timer_code = format!("
+            let timer_code = format!(
+                "
                 globalThis.{} = false;
                 globalThis.{} = false;
                 setTimeout('globalThis.{} = true', 0);
                 setTimeout('globalThis.{} = true', 0);
-            ", timer1_var, timer2_var, timer1_var, timer2_var);
+            ",
+                timer1_var, timer2_var, timer1_var, timer2_var
+            );
             cx.eval::<(), _>(timer_code.as_str())?;
             Ok::<_, Error>(())
         })?;
-
 
         // Process timers
         runtime.resolve_pending_jobs()?;
@@ -539,14 +518,16 @@ mod tests {
         // Use unique variable name to avoid interference between tests
         let unique_var = format!("clearedTimer_{}", std::process::id());
 
-        // Set a timer and immediately clear it
-        let timer_code = format!("
-            globalThis.{} = false;
-            const id = setTimeout('globalThis.{} = true', 0);
-            clearTimeout(id);
-        ", unique_var, unique_var);
-
         runtime.context().with(|cx| {
+            // Set a timer and immediately clear it
+            let timer_code = format!(
+                "
+                globalThis.{} = false;
+                const id = setTimeout('globalThis.{} = true', 0);
+                clearTimeout(id);
+            ",
+                unique_var, unique_var
+            );
             cx.eval::<(), _>(timer_code.as_str())?;
             Ok::<_, Error>(())
         })?;
@@ -612,7 +593,9 @@ mod tests {
         let runtime = Runtime::new(config)?;
         runtime.context().with(|cx| {
             // Create an interval and clear it
-            let result: Value = cx.eval("const id = setInterval('console.log(\"test\")', 1000); clearInterval(id); id")?;
+            let result: Value = cx.eval(
+                "const id = setInterval('console.log(\"test\")', 1000); clearInterval(id); id",
+            )?;
             let interval_id = result.as_number().unwrap() as i32;
             assert!(interval_id > 0);
 
@@ -629,9 +612,12 @@ mod tests {
 
         // Use unique variable name to avoid interference between tests
         let unique_var = format!("intervalCount_{}", std::process::id());
-        let interval_code = format!("globalThis.{} = 0; setInterval('globalThis.{}++', 0)", unique_var, unique_var);
 
         runtime.context().with(|cx| {
+            let interval_code = format!(
+                "globalThis.{} = 0; setInterval('globalThis.{}++', 0)",
+                unique_var, unique_var
+            );
             cx.eval::<(), _>(interval_code.as_str())?;
             Ok::<_, Error>(())
         })?;
@@ -648,7 +634,11 @@ mod tests {
             let count = result.as_number().unwrap_or(0.0) as i32;
 
             // Should have executed at least twice (showing it's repeating)
-            assert!(count >= 2, "Interval should have executed multiple times, got {}", count);
+            assert!(
+                count >= 2,
+                "Interval should have executed multiple times, got {}",
+                count
+            );
 
             Ok::<_, Error>(())
         })?;
@@ -665,11 +655,14 @@ mod tests {
         let unique_var = format!("clearedIntervalCount_{}", std::process::id());
 
         runtime.context().with(|cx| {
-            let interval_code = format!("
+            let interval_code = format!(
+                "
                 globalThis.{} = 0;
                 const id = setInterval('globalThis.{}++', 0);
                 clearInterval(id);
-            ", unique_var, unique_var);
+            ",
+                unique_var, unique_var
+            );
             cx.eval::<(), _>(interval_code.as_str())?;
             Ok::<_, Error>(())
         })?;
@@ -686,7 +679,11 @@ mod tests {
             let count = result.as_number().unwrap_or(-1.0) as i32;
 
             // Should still be 0 (not executed)
-            assert_eq!(count, 0, "Cleared interval should not execute, got {}", count);
+            assert_eq!(
+                count, 0,
+                "Cleared interval should not execute, got {}",
+                count
+            );
 
             Ok::<_, Error>(())
         })?;
@@ -706,12 +703,15 @@ mod tests {
 
         runtime.context().with(|cx| {
             // Set timeout first, then interval - both with 0 delay
-            let timer_code = format!("
+            let timer_code = format!(
+                "
                 globalThis.{} = false;
                 globalThis.{} = 0;
                 setTimeout('globalThis.{} = true', 0);
                 setInterval('globalThis.{}++', 0);
-            ", timeout_var, interval_var, timeout_var, interval_var);
+            ",
+                timeout_var, interval_var, timeout_var, interval_var
+            );
             cx.eval::<(), _>(timer_code.as_str())?;
             Ok::<_, Error>(())
         })?;
@@ -727,8 +727,14 @@ mod tests {
             let timeout_result: Value = cx.eval(timeout_check.as_str())?;
             let interval_result: Value = cx.eval(interval_check.as_str())?;
 
-            assert!(timeout_result.as_bool().unwrap_or(false), "Timeout should have executed");
-            assert!(interval_result.as_number().unwrap_or(0.0) as i32 >= 1, "Interval should have executed at least once");
+            assert!(
+                timeout_result.as_bool().unwrap_or(false),
+                "Timeout should have executed"
+            );
+            assert!(
+                interval_result.as_number().unwrap_or(0.0) as i32 >= 1,
+                "Interval should have executed at least once"
+            );
 
             Ok::<_, Error>(())
         })?;
@@ -741,8 +747,14 @@ mod tests {
             let timeout_result2: Value = cx.eval(timeout_check.as_str())?;
 
             // Timeout should still be true (unchanged), interval should have incremented
-            assert!(timeout_result2.as_bool().unwrap_or(false), "Timeout should remain executed");
-            assert!(interval_result2.as_number().unwrap_or(0.0) as i32 >= 2, "Interval should have executed multiple times");
+            assert!(
+                timeout_result2.as_bool().unwrap_or(false),
+                "Timeout should remain executed"
+            );
+            assert!(
+                interval_result2.as_number().unwrap_or(0.0) as i32 >= 2,
+                "Interval should have executed multiple times"
+            );
 
             Ok::<_, Error>(())
         })?;
