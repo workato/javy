@@ -262,6 +262,44 @@ mod tests {
     }
 
     #[test]
+    fn test_timer_function_callback() -> Result<()> {
+        let mut config = Config::default();
+        config.timers(true);
+        let runtime = Runtime::new(config)?;
+
+        runtime.context().with(|cx| {
+            // Create timeout with a closure with a mutable state
+            // To make sure the closure preserves the state reference
+            cx.eval::<(), _>("
+                globalThis.var1 = -123;
+                function createIncrementor(initialDelta) {
+                    let delta = initialDelta;
+                    return [function() { globalThis.var1 += delta; }, function(newDelta) { delta = newDelta; }];
+                }
+                [incrementor, setDelta] = createIncrementor(100);
+                incrementor();
+                setTimeout(incrementor, 0);
+                setDelta(123);
+            ")?;
+
+            // So far, only explicit call to incrementor (having delta = 100) is done
+            assert_eq!(-23, cx.eval::<i32, _>("globalThis.var1")?);
+
+            Ok::<_, Error>(())
+        })?;
+
+        // Process timers immediately without sleep - they should be available
+        runtime.resolve_pending_jobs()?;
+
+        runtime.context().with(|cx| {
+            // Check if closure correctly applied delta modified after its creation
+            assert_eq!(100, cx.eval::<i32, _>("globalThis.var1")?);
+            Ok::<_, Error>(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
     fn test_timer_with_delay() -> Result<()> {
         let mut config = Config::default();
         config.timers(true);
