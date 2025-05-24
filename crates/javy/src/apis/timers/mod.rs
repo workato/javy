@@ -195,22 +195,11 @@ mod tests {
         config.timers(true);
         let runtime = Runtime::new(config)?;
         runtime.context().with(|cx| {
-            // Check that setTimeout is available
-            let type_str: String = cx.eval("typeof setTimeout")?;
-            assert_eq!(type_str, "function");
-
-            // Check that clearTimeout is available
-            let type_str: String = cx.eval("typeof clearTimeout")?;
-            assert_eq!(type_str, "function");
-
-            // Check that setInterval is available
-            let type_str: String = cx.eval("typeof setInterval")?;
-            assert_eq!(type_str, "function");
-
-            // Check that clearInterval is available
-            let type_str: String = cx.eval("typeof clearInterval")?;
-            assert_eq!(type_str, "function");
-
+            // Check that API is available
+            assert_eq!("function", cx.eval::<String, _>("typeof setTimeout")?);
+            assert_eq!("function", cx.eval::<String, _>("typeof clearTimeout")?);
+            assert_eq!("function", cx.eval::<String, _>("typeof setInterval")?);
+            assert_eq!("function", cx.eval::<String, _>("typeof clearInterval")?);
             Ok::<_, Error>(())
         })?;
         Ok(())
@@ -242,7 +231,7 @@ mod tests {
         let runtime = Runtime::new(config)?;
         runtime.context().with(|cx| {
             // Create a timer and clear it
-            let code = "const id = setTimeout('console.log(\"test\")', 1000); clearTimeout(id); id";
+            let code = r#"const id = setTimeout('console.log("test")', 1000); clearTimeout(id); id"#;
             let timer_id: i32 = cx.eval(code)?;
             assert!(timer_id > 0);
             Ok::<_, Error>(())
@@ -256,14 +245,8 @@ mod tests {
         config.timers(true);
         let runtime = Runtime::new(config)?;
 
-        // Use a unique variable name to avoid interference between tests
-        let unique_var = format!("timerExecuted_{}", std::process::id());
-
         runtime.context().with(|cx| {
-            cx.eval::<(), _>(format!(
-                "globalThis.{} = false; setTimeout('globalThis.{} = true', 0)",
-                unique_var, unique_var
-            ))?;
+            cx.eval::<(), _>("globalThis.var1 = -123; setTimeout('globalThis.var1 = 321', 0)")?;
             Ok::<_, Error>(())
         })?;
 
@@ -272,8 +255,7 @@ mod tests {
 
         runtime.context().with(|cx| {
             // Check if timer was executed
-            let result: bool = cx.eval(format!("globalThis.{}", unique_var))?;
-            assert!(result);
+            assert_eq!(321, cx.eval::<i32, _>("globalThis.var1")?);
             Ok::<_, Error>(())
         })?;
         Ok(())
@@ -285,15 +267,9 @@ mod tests {
         config.timers(true);
         let runtime = Runtime::new(config)?;
 
-        // Use unique variable name to avoid interference between tests
-        let unique_var = format!("delayedTimer_{}", std::process::id());
-
         runtime.context().with(|cx| {
             // Set a timer with a delay that shouldn't fire immediately
-            cx.eval::<(), _>(format!(
-                "globalThis.{} = false; setTimeout('globalThis.{} = true', 1000)",
-                unique_var, unique_var
-            ))?;
+            cx.eval::<(), _>("globalThis.var1 = -765; setTimeout('globalThis.var1 = 567', 1000)")?;
             Ok::<_, Error>(())
         })?;
 
@@ -302,8 +278,7 @@ mod tests {
 
         runtime.context().with(|cx| {
             // Check if timer was NOT executed
-            let result: bool = cx.eval(format!("globalThis.{}", unique_var))?;
-            assert_eq!(result, false);
+            assert_eq!(-765, cx.eval::<i32, _>("globalThis.var1")?);
             Ok::<_, Error>(())
         })?;
         Ok(())
@@ -315,22 +290,14 @@ mod tests {
         config.timers(true);
         let runtime = Runtime::new(config)?;
 
-        // Use unique variable names to avoid interference between tests
-        let unique_id = std::process::id();
-        let timer1_var = format!("timer1_{}", unique_id);
-        let timer2_var = format!("timer2_{}", unique_id);
-
         runtime.context().with(|cx| {
             // Set multiple timers
-            cx.eval::<(), _>(format!(
-                "
-                    globalThis.{} = false;
-                    globalThis.{} = false;
-                    setTimeout('globalThis.{} = true', 0);
-                    setTimeout('globalThis.{} = true', 0);
-                ",
-                timer1_var, timer2_var, timer1_var, timer2_var
-            ))?;
+            cx.eval::<(), _>("
+                globalThis.var1 = 0;
+                globalThis.var2 = 0;
+                setTimeout('globalThis.var1 = 123', 0);
+                setTimeout('globalThis.var2 = 321', 0);
+            ")?;
             Ok::<_, Error>(())
         })?;
 
@@ -339,11 +306,8 @@ mod tests {
 
         runtime.context().with(|cx| {
             // Check if both timers were executed
-            let result1: bool = cx.eval(format!("globalThis.{}", timer1_var))?;
-            let result2: bool = cx.eval(format!("globalThis.{}", timer2_var))?;
-            assert_eq!(result1, true);
-            assert_eq!(result2, true);
-
+            assert_eq!(123, cx.eval::<i32, _>("globalThis.var1")?);
+            assert_eq!(321, cx.eval::<i32, _>("globalThis.var2")?);
             Ok::<_, Error>(())
         })?;
         Ok(())
@@ -355,19 +319,13 @@ mod tests {
         config.timers(true);
         let runtime = Runtime::new(config)?;
 
-        // Use unique variable name to avoid interference between tests
-        let unique_var = format!("clearedTimer_{}", std::process::id());
-
         runtime.context().with(|cx| {
             // Set a timer and immediately clear it
-            cx.eval::<(), _>(format!(
-                "
-                    globalThis.{} = false;
-                    const id = setTimeout('globalThis.{} = true', 0);
-                    clearTimeout(id);
-                ",
-                unique_var, unique_var
-            ))?;
+            cx.eval::<(), _>("
+                globalThis.var1 = -432;
+                const id = setTimeout('globalThis.var1 = 234', 0);
+                clearTimeout(id);
+            ")?;
             Ok::<_, Error>(())
         })?;
 
@@ -376,8 +334,7 @@ mod tests {
 
         runtime.context().with(|cx| {
             // Check if timer was NOT executed
-            let result: bool = cx.eval(format!("globalThis.{}", unique_var))?;
-            assert_eq!(result, false);
+            assert_eq!(-432, cx.eval::<i32, _>("globalThis.var1")?);
             Ok::<_, Error>(())
         })?;
         Ok(())
@@ -394,7 +351,7 @@ mod tests {
 
         runtime.context().with(|cx| {
             // Add a timer
-            cx.eval::<(), _>("setTimeout('console.log(\"test\")', 1000)")?;
+            cx.eval::<(), _>(r#"setTimeout('console.log("test")', 1000)"#)?;
             Ok::<_, Error>(())
         })?;
 
@@ -429,7 +386,7 @@ mod tests {
         let runtime = Runtime::new(config)?;
         runtime.context().with(|cx| {
             // Create an interval and clear it
-            let code = "const id = setInterval('console.log(\"test\")', 1000); clearInterval(id); id";
+            let code = r#"const id = setInterval('console.log("test")', 1000); clearInterval(id); id"#;
             let interval_id: i32 = cx.eval(code)?;
             assert!(interval_id > 0);
             Ok::<_, Error>(())
@@ -443,14 +400,8 @@ mod tests {
         config.timers(true);
         let runtime = Runtime::new(config)?;
 
-        // Use unique variable name to avoid interference between tests
-        let unique_var = format!("intervalCount_{}", std::process::id());
-
         runtime.context().with(|cx| {
-            cx.eval::<(), _>(format!(
-                "globalThis.{} = 0; setInterval('globalThis.{}++', 0)",
-                unique_var, unique_var
-            ))?;
+            cx.eval::<(), _>("globalThis.var1 = 1000; setInterval('globalThis.var1++', 0)")?;
             Ok::<_, Error>(())
         })?;
 
@@ -461,8 +412,8 @@ mod tests {
 
         runtime.context().with(|cx| {
             // Check if interval executed multiple times (showing it's repeating)
-            let count: i32 = cx.eval(format!("globalThis.{}", unique_var))?;
-            assert!(count >= 2, "Interval should have executed multiple times, got {}", count);
+            let var1: i32 = cx.eval("globalThis.var1")?;
+            assert!(var1 >= 1002, "Interval should have executed multiple times, got {}", var1);
             Ok::<_, Error>(())
         })?;
         Ok(())
@@ -474,18 +425,12 @@ mod tests {
         config.timers(true);
         let runtime = Runtime::new(config)?;
 
-        // Use unique variable name to avoid interference between tests
-        let unique_var = format!("clearedIntervalCount_{}", std::process::id());
-
         runtime.context().with(|cx| {
-            cx.eval::<(), _>(format!(
-                "
-                    globalThis.{} = 0;
-                    const id = setInterval('globalThis.{}++', 0);
-                    clearInterval(id);
-                ",
-                unique_var, unique_var
-            ))?;
+            cx.eval::<(), _>("
+                globalThis.var1 = 100;
+                const id = setInterval('globalThis.var1++', 0);
+                clearInterval(id);
+            ")?;
             Ok::<_, Error>(())
         })?;
 
@@ -496,8 +441,8 @@ mod tests {
 
         runtime.context().with(|cx| {
             // Check that interval was NOT executed (should be 0)
-            let count: i32 = cx.eval(format!("globalThis.{}", unique_var))?;
-            assert_eq!(count, 0, "Cleared interval should not execute");
+            let var1: i32 = cx.eval("globalThis.var1")?;
+            assert_eq!(100, var1, "Cleared interval should not execute");
             Ok::<_, Error>(())
         })?;
         Ok(())
@@ -509,39 +454,26 @@ mod tests {
         config.timers(true);
         let runtime = Runtime::new(config)?;
 
-        // Use unique variable names
-        let unique_id = std::process::id();
-        let timeout_var = format!("timeoutExecuted_{}", unique_id);
-        let interval_var = format!("intervalCount_{}", unique_id);
-
         runtime.context().with(|cx| {
             // Set timeout first, then interval - both with 0 delay
-            let timer_code = format!(
-                "
-                    globalThis.{} = false;
-                    globalThis.{} = 0;
-                    setTimeout('globalThis.{} = true', 0);
-                    setInterval('globalThis.{}++', 0);
-                ",
-                timeout_var, interval_var, timeout_var, interval_var
-            );
-            cx.eval::<(), _>(timer_code)?;
+            cx.eval::<(), _>("
+                globalThis.var1 = -543;
+                globalThis.var2 = 100;
+                setTimeout('globalThis.var1 = 999', 0);
+                setInterval('globalThis.var2++', 0);
+            ")?;
             Ok::<_, Error>(())
         })?;
 
         // Process timers first time - should execute both timeout and first interval
         runtime.resolve_pending_jobs()?;
 
-        // Check both timeout and interval results
-        let timeout_check = format!("globalThis.{}", timeout_var);
-        let interval_check = format!("globalThis.{}", interval_var);
-
         runtime.context().with(|cx| {
-            let timeout_result: bool = cx.eval(timeout_check.as_str())?;
-            let interval_result: i32 = cx.eval(interval_check.as_str())?;
+            let var1: i32 = cx.eval("globalThis.var1")?;
+            let var2: i32 = cx.eval("globalThis.var2")?;
 
-            assert!(timeout_result, "Timeout should have executed");
-            assert!(interval_result >= 1, "Interval should have executed at least once");
+            assert_eq!(999, var1, "Timeout should have executed");
+            assert!(var2 >= 101, "Interval should have executed at least once, got {}", var2);
 
             Ok::<_, Error>(())
         })?;
@@ -550,12 +482,12 @@ mod tests {
         runtime.resolve_pending_jobs()?;
 
         runtime.context().with(|cx| {
-            let timeout_result: bool = cx.eval(timeout_check.as_str())?;
-            let interval_result: i32 = cx.eval(interval_check.as_str())?;
+            let var1: i32 = cx.eval("globalThis.var1")?;
+            let var2: i32 = cx.eval("globalThis.var2")?;
 
             // Timeout should still be true (unchanged), interval should have incremented
-            assert!(timeout_result, "Timeout should remain executed");
-            assert!(interval_result >= 2, "Interval should have executed multiple times");
+            assert_eq!(999, var1, "Timeout should remain executed");
+            assert!(var2 >= 102, "Interval should have executed multiple times");
 
             Ok::<_, Error>(())
         })?;
