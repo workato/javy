@@ -3,12 +3,18 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Timer entry in the timer queue
 #[derive(Debug, Clone)]
+pub(super) enum TimerCallback {
+    Code(String),
+    Function,
+}
+
+/// Timer entry in the timer queue
+#[derive(Debug)]
 pub(super) struct Timer {
     pub id: u32,
     pub fire_time: u64,           // milliseconds since UNIX epoch
-    pub callback: String,         // JavaScript code to execute
+    pub callback: TimerCallback,
     pub interval_ms: Option<u32>, // If Some(), this is a repeating timer
 }
 
@@ -52,7 +58,7 @@ impl TimerQueue {
         &mut self,
         delay_ms: u32,
         repeat: bool,
-        callback: String,
+        callback: TimerCallback,
         reuse_id: Option<u32>,
     ) -> u32 {
         let now = Self::now();
@@ -114,10 +120,14 @@ mod tests {
     fn test_timer_queue() {
         let mut queue = TimerQueue::new();
 
+        fn add_timer(delay_ms: u32, callback_code: &str, queue: &mut TimerQueue) -> u32 {
+            queue.add_timer(delay_ms, false, TimerCallback::Code(callback_code.to_string()), None)
+        }
+
         // Add some timers
-        let id1 = queue.add_timer(100, false, "console.log('timer1')".to_string(), None);
-        let id2 = queue.add_timer(50, false, "console.log('timer2')".to_string(), None);
-        let id3 = queue.add_timer(200, false, "console.log('timer3')".to_string(), None);
+        let id1 = add_timer(100, "console.log('timer1')", &mut queue);
+        let id2 = add_timer(50, "console.log('timer2')", &mut queue);
+        let id3 = add_timer(200, "console.log('timer3')", &mut queue);
 
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);

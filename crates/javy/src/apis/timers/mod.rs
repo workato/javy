@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 mod queue;
-use queue::TimerQueue;
+use queue::{TimerCallback, TimerQueue};
 
 use crate::{
     hold, hold_and_release,
@@ -72,9 +72,23 @@ impl TimersRuntime {
 
         // Execute all timer callbacks (both timeouts and intervals)
         for timer in &expired_timers {
-            if let Err(e) = ctx.eval::<(), _>(timer.callback.as_str()) {
-                eprintln!("Timer callback error: {}", e);
-            }
+            match &timer.callback {
+                TimerCallback::Code(code) => {
+                    if let Err(e) = ctx.eval::<(), _>(code.as_str()) {
+                        eprintln!("Timer callback error: {}", e);
+                    }
+                },
+                TimerCallback::Function => {
+                    let code = format!("globalThis.__timer_callback_{}()", timer.id);
+                    if let Err(e) = ctx.eval::<(), _>(code.as_str()) {
+                        eprintln!("Timer callback error: {}", e);
+                    }
+                    // remove the callback from the global object, unless it's an interval
+                    if timer.interval_ms.is_none() {
+                        ctx.globals().remove(format!("__timer_callback_{}", timer.id))?;
+                    }
+                },
+            };
         }
 
         Ok(())
@@ -95,13 +109,12 @@ fn set_timeout<'js>(queue: &Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<V
         return Err(anyhow!("setTimeout requires at least 1 argument"));
     }
 
-    // Get callback (can be function or string)
-    let callback_str = if args[0].is_function() {
-        // Convert function to string representation
-        val_to_string(&ctx, args[0].clone())?
-    } else {
-        // Treat as string code
-        val_to_string(&ctx, args[0].clone())?
+    let callback_str = val_to_string(&ctx, args[0].clone())?;
+    let callback = if args[0].is_function() {
+        TimerCallback::Function
+    }
+    else {
+        TimerCallback::Code(callback_str)
     };
 
     // Get delay (default to 0 if not provided)
@@ -112,8 +125,12 @@ fn set_timeout<'js>(queue: &Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<V
     };
 
     let mut queue = queue.lock().unwrap();
-    let timer_id = queue.add_timer(delay_ms, false, callback_str, None);
+    let timer_id = queue.add_timer(delay_ms, false, callback, None);
     drop(queue);
+
+    if args[0].is_function() {
+        ctx.globals().set(format!("__timer_callback_{}", timer_id), args[0].clone())?;
+    }
 
     Ok(Value::new_int(ctx, timer_id as i32))
 }
@@ -129,8 +146,12 @@ fn clear_timeout<'js>(queue: &Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result
     let timer_id = args[0].as_number().unwrap_or(0.0) as u32;
 
     let mut queue = queue.lock().unwrap();
-    queue.remove_timer(timer_id);
+    let removed = queue.remove_timer(timer_id);
     drop(queue);
+
+    if removed {
+        ctx.globals().remove(format!("__timer_callback_{}", timer_id))?;
+    }
 
     Ok(Value::new_undefined(ctx))
 }
@@ -143,13 +164,12 @@ fn set_interval<'js>(queue: &Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<
         return Err(anyhow!("setInterval requires at least 1 argument"));
     }
 
-    // Get callback (can be function or string)
-    let callback_str = if args[0].is_function() {
-        // Convert function to string representation
-        val_to_string(&ctx, args[0].clone())?
-    } else {
-        // Treat as string code
-        val_to_string(&ctx, args[0].clone())?
+    let callback_str = val_to_string(&ctx, args[0].clone())?;
+    let callback = if args[0].is_function() {
+        TimerCallback::Function
+    }
+    else {
+        TimerCallback::Code(callback_str)
     };
 
     // Get interval (default to 0 if not provided)
@@ -160,8 +180,12 @@ fn set_interval<'js>(queue: &Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Result<
     };
 
     let mut queue = queue.lock().unwrap();
-    let timer_id = queue.add_timer(interval_ms, true, callback_str, None);
+    let timer_id = queue.add_timer(interval_ms, true, callback, None);
     drop(queue);
+
+    if args[0].is_function() {
+        ctx.globals().set(format!("__timer_callback_{}", timer_id), args[0].clone())?;
+    }
 
     Ok(Value::new_int(ctx, timer_id as i32))
 }
@@ -177,8 +201,12 @@ fn clear_interval<'js>(queue: &Arc<Mutex<TimerQueue>>, args: Args<'js>) -> Resul
     let timer_id = args[0].as_number().unwrap_or(0.0) as u32;
 
     let mut queue = queue.lock().unwrap();
-    queue.remove_timer(timer_id);
+    let removed = queue.remove_timer(timer_id);
     drop(queue);
+
+    if removed {
+        ctx.globals().remove(format!("__timer_callback_{}", timer_id))?;
+    }
 
     Ok(Value::new_undefined(ctx))
 }
@@ -270,13 +298,13 @@ mod tests {
         runtime.context().with(|cx| {
             // Create timeout with a closure with a mutable state
             // To make sure the closure preserves the state reference
-            cx.eval::<(), _>("
+            let res = cx.eval::<(), _>("
                 globalThis.var1 = -123;
                 function createIncrementor(initialDelta) {
-                    let delta = initialDelta;
-                    return [function() { globalThis.var1 += delta; }, function(newDelta) { delta = newDelta; }];
+                    var delta = initialDelta;
+                    return [() => globalThis.var1 += delta, (newDelta) => delta = newDelta];
                 }
-                [incrementor, setDelta] = createIncrementor(100);
+                var [incrementor, setDelta] = createIncrementor(100);
                 incrementor();
                 setTimeout(incrementor, 0);
                 setDelta(123);
