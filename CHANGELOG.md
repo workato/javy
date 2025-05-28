@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [5.0.4-workato.5] - 2025-01-03
+## [5.0.4-workato.5] - 2025-05-28
 
 ### Added
 
@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Timer Architecture Improvements** (PR #6 from id-ilych/fix-timers):
+  - **Cross-Runtime Issue**: Fixed timers using global variables that caused issues across different JS runtime instances
+  - **Function Callback Support**: Added support for function callbacks in addition to string callbacks
+  - **Memory Management**: Improved timer cleanup and state management with proper callback storage
+  - **Code Organization**: Separated timer queue implementation from JavaScript bindings for better maintainability
 - **Compiler Warnings**: Addressed all compiler warnings across the codebase
   - Removed unnecessary `mut` keywords in console module tests (7 warnings)
   - Prefixed unused `logs` variables with underscore in integration tests (4 warnings)
@@ -31,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Timer Implementation**: Refactored to use `TimersRuntime` struct instead of global state
+  - Per-runtime timer queues eliminate cross-contamination between runtime instances
+  - Enhanced function callback support with proper closure preservation
+  - Improved test coverage for both string and function callbacks
 - **Performance Benchmarks**: Updated Blob API performance baseline to ~760k fuel consumption
 - **Documentation**: Enhanced FACTS.md with complete Blob API status and usage examples
 
@@ -40,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Memory Management**: Efficient reference counting with global HashMap-based blob storage
 - **JavaScript Integration**: Uses QuickJS bindings for seamless JS-Rust interop
 - **Architecture**: JavaScript constructors calling Rust helper functions for optimal performance
+- **Timer Reliability**: Function callbacks now properly preserve closure state and support complex scenarios
 
 ## [5.0.4-workato.4] - 2025-05-23
 
