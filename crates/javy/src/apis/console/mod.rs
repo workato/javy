@@ -216,9 +216,9 @@ mod tests {
     #[test]
     fn test_redirect_functionality() -> Result<()> {
         // Test normal mode (console.log -> stdout, warn/error -> stderr)
-        let mut log_stream = SharedStream::default();
-        let mut warn_stream = SharedStream::default();
-        let mut error_stream = SharedStream::default();
+        let log_stream = SharedStream::default();
+        let warn_stream = SharedStream::default();
+        let error_stream = SharedStream::default();
 
         let runtime = Runtime::default();
         let ctx = runtime.context();
@@ -239,9 +239,9 @@ mod tests {
         })?;
 
         // Test redirected mode (all console outputs -> stderr)
-        let mut redirected_log_stream = SharedStream::default();
-        let mut redirected_warn_stream = SharedStream::default();
-        let mut redirected_error_stream = SharedStream::default();
+        let redirected_log_stream = SharedStream::default();
+        let redirected_warn_stream = SharedStream::default();
+        let redirected_error_stream = SharedStream::default();
 
         ctx.with(|this| {
             // Redirected mode: all -> stderr (simulated by using same stream)
@@ -259,7 +259,7 @@ mod tests {
         })?;
 
         // Test actual redirect scenario (log, warn, error all go to same stderr stream)
-        let mut all_stderr_stream = SharedStream::default();
+        let all_stderr_stream = SharedStream::default();
 
         ctx.with(|this| {
             // Redirect mode: console.log, warn, error all use stderr
