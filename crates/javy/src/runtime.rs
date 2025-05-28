@@ -39,7 +39,7 @@ pub struct Runtime {
     /// The inner QuickJS runtime representation.
     // Read above on the usage of `ManuallyDrop`.
     inner: ManuallyDrop<QRuntime>,
-    /// Whether timers are enabled
+    /// Timers runtime state, if enabled.
     timers: Option<TimersRuntime>,
 }
 
