@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Slice functionality with negative indices and bounds checking
   - File inheritance from Blob with all methods and properties
   - Error handling for invalid constructor arguments
+- **Timer Function Callback Test Coverage**: Comprehensive test suite for function callback functionality from PR #6
+  - **Integration Test**: `test_timers_function_callbacks` with 6 comprehensive scenarios
+  - **Unit Tests**: 5 new edge case tests covering memory management, cancellation, and complex closures
+  - **Test File**: `crates/cli/tests/sample-scripts/timers-functions.js` for end-to-end validation
+  - **Coverage**: Function execution, closure state preservation, interval persistence, cancellation cleanup
+  - **Performance**: Established baseline of ~387k fuel consumption for function callbacks vs ~300k for strings
 
 ### Fixed
 

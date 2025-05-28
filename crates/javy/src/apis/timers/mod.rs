@@ -298,7 +298,7 @@ mod tests {
         runtime.context().with(|cx| {
             // Create timeout with a closure with a mutable state
             // To make sure the closure preserves the state reference
-            let res = cx.eval::<(), _>("
+            let _res = cx.eval::<(), _>("
                 globalThis.var1 = -123;
                 function createIncrementor(initialDelta) {
                     var delta = initialDelta;
@@ -555,6 +555,187 @@ mod tests {
             assert_eq!(999, var1, "Timeout should remain executed");
             assert!(var2 >= 102, "Interval should have executed multiple times");
 
+            Ok::<_, Error>(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_function_callback_cleanup_on_timeout() -> Result<()> {
+        let mut config = Config::default();
+        config.timers(true);
+        let runtime = Runtime::new(config)?;
+
+        runtime.context().with(|cx| {
+            // Create a function timeout
+            cx.eval::<(), _>("
+                globalThis.testVar = 'initial';
+                const id = setTimeout(function() { 
+                    globalThis.testVar = 'executed'; 
+                }, 0);
+                globalThis.timerId = id;
+            ")?;
+            Ok::<_, Error>(())
+        })?;
+
+        // Process timers to execute the timeout
+        runtime.resolve_pending_jobs()?;
+
+        runtime.context().with(|cx| {
+            // Check that the function was executed
+            assert_eq!("executed", cx.eval::<String, _>("globalThis.testVar")?);
+            
+            // Check that the function callback was cleaned up from global scope
+            let timer_id: i32 = cx.eval("globalThis.timerId")?;
+            let callback_exists: bool = cx.eval(format!("typeof globalThis.__timer_callback_{} !== 'undefined'", timer_id).as_str())?;
+            assert!(!callback_exists, "Function callback should be cleaned up after timeout execution");
+            
+            Ok::<_, Error>(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_function_callback_persistence_on_interval() -> Result<()> {
+        let mut config = Config::default();
+        config.timers(true);
+        let runtime = Runtime::new(config)?;
+
+        runtime.context().with(|cx| {
+            // Create a function interval
+            cx.eval::<(), _>("
+                globalThis.counter = 0;
+                const id = setInterval(function() { 
+                    globalThis.counter++; 
+                    if (globalThis.counter >= 2) clearInterval(id);
+                }, 0);
+                globalThis.intervalId = id;
+            ")?;
+            Ok::<_, Error>(())
+        })?;
+
+        // Process timers multiple times
+        runtime.resolve_pending_jobs()?;
+        runtime.resolve_pending_jobs()?;
+
+        runtime.context().with(|cx| {
+            // Check that the interval executed multiple times
+            let counter: i32 = cx.eval("globalThis.counter")?;
+            assert!(counter >= 2, "Interval should have executed multiple times");
+            
+            // Check that the function callback persisted during interval execution
+            // (it should only be cleaned up when the interval is cleared)
+            let interval_id: i32 = cx.eval("globalThis.intervalId")?;
+            let callback_exists: bool = cx.eval(format!("typeof globalThis.__timer_callback_{} !== 'undefined'", interval_id).as_str())?;
+            assert!(!callback_exists, "Function callback should be cleaned up after interval is cleared");
+            
+            Ok::<_, Error>(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_function_callback_cancellation_cleanup() -> Result<()> {
+        let mut config = Config::default();
+        config.timers(true);
+        let runtime = Runtime::new(config)?;
+
+        runtime.context().with(|cx| {
+            // Create a function timeout and immediately cancel it
+            cx.eval::<(), _>("
+                globalThis.shouldNotExecute = false;
+                const id = setTimeout(function() { 
+                    globalThis.shouldNotExecute = true; 
+                }, 1000);
+                clearTimeout(id);
+                globalThis.cancelledId = id;
+            ")?;
+            Ok::<_, Error>(())
+        })?;
+
+        // Process timers (should not execute the cancelled timer)
+        runtime.resolve_pending_jobs()?;
+
+        runtime.context().with(|cx| {
+            // Check that the function was NOT executed
+            assert!(!cx.eval::<bool, _>("globalThis.shouldNotExecute")?);
+            
+            // Check that the function callback was cleaned up when cancelled
+            let cancelled_id: i32 = cx.eval("globalThis.cancelledId")?;
+            let callback_exists: bool = cx.eval(format!("typeof globalThis.__timer_callback_{} !== 'undefined'", cancelled_id).as_str())?;
+            assert!(!callback_exists, "Function callback should be cleaned up when timer is cancelled");
+            
+            Ok::<_, Error>(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_mixed_function_and_string_callbacks() -> Result<()> {
+        let mut config = Config::default();
+        config.timers(true);
+        let runtime = Runtime::new(config)?;
+
+        runtime.context().with(|cx| {
+            // Create both function and string callbacks
+            cx.eval::<(), _>("
+                globalThis.functionResult = 'not executed';
+                globalThis.stringResult = 'not executed';
+                
+                setTimeout(function() { 
+                    globalThis.functionResult = 'function executed'; 
+                }, 0);
+                
+                setTimeout('globalThis.stringResult = \"string executed\"', 0);
+            ")?;
+            Ok::<_, Error>(())
+        })?;
+
+        // Process timers
+        runtime.resolve_pending_jobs()?;
+
+        runtime.context().with(|cx| {
+            // Check that both callbacks executed
+            assert_eq!("function executed", cx.eval::<String, _>("globalThis.functionResult")?);
+            assert_eq!("string executed", cx.eval::<String, _>("globalThis.stringResult")?);
+            
+            Ok::<_, Error>(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_function_callback_with_complex_closure() -> Result<()> {
+        let mut config = Config::default();
+        config.timers(true);
+        let runtime = Runtime::new(config)?;
+
+        runtime.context().with(|cx| {
+            // Create a complex closure that captures multiple variables
+            cx.eval::<(), _>("
+                globalThis.result = '';
+                
+                function createComplexCallback(prefix, suffix) {
+                    let counter = 0;
+                    return function() {
+                        counter++;
+                        globalThis.result = prefix + counter + suffix;
+                    };
+                }
+                
+                const callback = createComplexCallback('Count: ', ' times');
+                setTimeout(callback, 0);
+            ")?;
+            Ok::<_, Error>(())
+        })?;
+
+        // Process timers
+        runtime.resolve_pending_jobs()?;
+
+        runtime.context().with(|cx| {
+            // Check that the complex closure executed correctly
+            assert_eq!("Count: 1 times", cx.eval::<String, _>("globalThis.result")?);
+            
             Ok::<_, Error>(())
         })?;
         Ok(())
