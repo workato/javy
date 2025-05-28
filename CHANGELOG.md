@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.4-workato.6] - 2025-05-28
+
+### Added
+
+- **Configurable Wait-for-Completion Timeout**: Extended `-J` flag system to support non-boolean values
+  - `wait-timeout-ms=<milliseconds>` - Set maximum wait time for async operations
+  - **Infinite Wait by Default**: When `wait-for-completion=y` is set without timeout, waits indefinitely
+  - **Proper Timeout Handling**: Shows "Warning: Timeout reached (N ms)" when timeout occurs
+  - **Mixed Value Types**: `JsOptionValue` enum now supports both `Boolean(bool)` and `Number(u64)`
+- **Enhanced CLI Parameter Parsing**: Extended parser to handle numeric values
+  - **Special Handling**: `wait-timeout-ms` requires numeric value, all others remain boolean
+  - **Validation**: Proper error handling for invalid numeric inputs
+  - **Help Text**: Shows correct format (`=<milliseconds>` vs `[=y|n]`)
+- **Comprehensive Test Coverage**: Added extensive test suite for new functionality
+  - **Parameter Parsing Tests**: Validates numeric value parsing and validation
+  - **Integration Tests**: End-to-end testing with actual timeout scenarios
+  - **Validation Tests**: Ensures event-loop dependency is properly enforced
+
+### Enhanced
+
+- **Plugin API Configuration**: Extended `Config` struct with `wait_timeout_ms` field and method
+- **Event Loop Enhancement**: Modified `wait_for_completion()` function with configurable timeout
+  - **Efficient Waiting**: Implements 1ms sleep between iterations
+  - **Clear Messaging**: Timeout warnings with precise millisecond reporting
+  - **Safety Limits**: Prevents infinite loops with proper timeout handling
+- **Config Schema**: Automatically includes `wait-timeout-ms` in supported properties
+- **CLI Validation**: Early validation with helpful error messages for missing dependencies
+
+### Fixed
+
+- **Config Test Cleanup**: Removed `test_config_defaults_and_setters` as requested
+- **Runner Build Issues**: Fixed missing `preload` field in static builds
+- **Import Warnings**: Removed unused `Serialize` import from js_config.rs
+
+### Usage Examples
+
+```bash
+# Infinite wait (default when wait-for-completion=y)
+javy build -J event-loop=y -J wait-for-completion=y script.js
+
+# Wait with 5 second timeout
+javy build -J event-loop=y -J wait-for-completion=y -J wait-timeout-ms=5000 script.js
+
+# Help shows correct parameter format
+javy build -J help  # Shows: wait-timeout-ms=<milliseconds>
+```
+
+### Technical Implementation
+
+- **Architecture**: Extended `-J` flag parsing to support mixed boolean/numeric values
+- **Validation**: Automatic validation that `event-loop=y` is enabled when using `wait-for-completion=y`
+- **Config Schema**: Plugin automatically exposes `wait-timeout-ms` parameter in help
+- **Event Loop**: Enhanced with configurable timeout while maintaining infinite wait default
+- **Standard Build Tools**: Uses only `cargo build` commands, no custom hacks or init-plugin steps
+
+### Breaking Changes
+
+None. All existing functionality preserved with full backward compatibility.
+
 ## [5.0.4-workato.5] - 2025-05-28
 
 ### Added
