@@ -56,6 +56,8 @@ static mut COMPILE_SRC_RET_AREA: [u32; 2] = [0; 2];
 
 static mut RUNTIME: OnceCell<Runtime> = OnceCell::new();
 static mut EVENT_LOOP_ENABLED: bool = false;
+static mut WAIT_FOR_COMPLETION: bool = false;
+static mut WAIT_TIMEOUT_MS: Option<u64> = None;
 
 static EVENT_LOOP_ERR: &str = r#"
                 Pending jobs in the event queue.
@@ -68,6 +70,11 @@ pub fn initialize_runtime<F>(config: Config, modify_runtime: F) -> Result<()>
 where
     F: FnOnce(Runtime) -> Runtime,
 {
+    // Validate configuration dependencies
+    if config.wait_for_completion && !config.event_loop {
+        bail!("wait_for_completion requires event_loop to be enabled");
+    }
+    
     let runtime = Runtime::new(config.runtime_config).unwrap();
     let runtime = modify_runtime(runtime);
     unsafe {
@@ -80,6 +87,8 @@ where
             .map_err(|_| anyhow!("Could not pre-initialize javy::Runtime"))
             .unwrap();
         EVENT_LOOP_ENABLED = config.event_loop;
+        WAIT_FOR_COMPLETION = config.wait_for_completion;
+        WAIT_TIMEOUT_MS = config.wait_timeout_ms;
     };
     Ok(())
 }
@@ -213,7 +222,13 @@ fn handle_maybe_promise(this: Ctx, value: Value) -> quickjs::Result<()> {
 
 fn ensure_pending_jobs(rt: &Runtime) -> Result<()> {
     if unsafe { EVENT_LOOP_ENABLED } {
-        rt.resolve_pending_jobs()
+        if unsafe { WAIT_FOR_COMPLETION } {
+            // Wait for all async operations to complete
+            wait_for_completion(rt)
+        } else {
+            // Original behavior: resolve once
+            rt.resolve_pending_jobs()
+        }
     } else if rt.has_pending_jobs() {
         bail!(EVENT_LOOP_ERR);
     } else {
@@ -221,7 +236,96 @@ fn ensure_pending_jobs(rt: &Runtime) -> Result<()> {
     }
 }
 
+fn wait_for_completion(rt: &Runtime) -> Result<()> {
+    use std::{thread, time::{Duration, Instant}};
+    
+    const SLEEP_MS: u64 = 1; // 1ms sleep between iterations
+    
+    let timeout_ms = unsafe { WAIT_TIMEOUT_MS };
+    let start_time = Instant::now();
+    
+    loop {
+        // Process any immediately available jobs
+        rt.resolve_pending_jobs()?;
+        
+        // Check if there are still pending jobs
+        if !rt.has_pending_jobs() {
+            break;
+        }
+        
+        // Check timeout if configured
+        if let Some(timeout) = timeout_ms {
+            let elapsed = start_time.elapsed().as_millis() as u64;
+            if elapsed >= timeout {
+                eprintln!("Warning: Timeout reached ({} ms) while waiting for async operations to complete", timeout);
+                break;
+            }
+        }
+        
+        // Sleep briefly to allow time to pass for delayed timers
+        thread::sleep(Duration::from_millis(SLEEP_MS));
+    }
+    
+    Ok(())
+}
+
 fn handle_error(e: Error) {
     eprintln!("{e}");
     process::abort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use javy::{Config as JavyConfig, Runtime};
+
+    #[test]
+    fn test_wait_for_completion_no_pending_jobs() {
+        let javy_config = JavyConfig::default();
+        let runtime = Runtime::new(javy_config).unwrap();
+        
+        let result = wait_for_completion(&runtime);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_wait_for_completion_with_immediate_timers() {
+        let mut javy_config = JavyConfig::default();
+        javy_config.timers(true);
+        let runtime = Runtime::new(javy_config).unwrap();
+        
+        // Create a timer that executes immediately
+        runtime.context().with(|cx| {
+            cx.eval::<(), _>("setTimeout(() => { globalThis.testResult = 'completed'; }, 0)").unwrap();
+        });
+        
+        let result = wait_for_completion(&runtime);
+        assert!(result.is_ok());
+        
+        // Verify the timer executed
+        runtime.context().with(|cx| {
+            let result: String = cx.eval("globalThis.testResult || 'not executed'").unwrap();
+            assert_eq!(result, "completed");
+        });
+    }
+
+    #[test]
+    fn test_ensure_pending_jobs_behavior() {
+        let javy_config = JavyConfig::default();
+        let runtime = Runtime::new(javy_config).unwrap();
+        
+        // Test with wait_for_completion disabled (default)
+        let mut config1 = Config::default();
+        config1.event_loop(true).wait_for_completion(false);
+        initialize_runtime(config1, |rt| rt).unwrap();
+        let result = ensure_pending_jobs(&runtime);
+        assert!(result.is_ok());
+        
+        // Test with wait_for_completion enabled
+        let mut config2 = Config::default();
+        config2.event_loop(true).wait_for_completion(true);
+        initialize_runtime(config2, |rt| rt).unwrap();
+        let result = ensure_pending_jobs(&runtime);
+        assert!(result.is_ok());
+    }
 }

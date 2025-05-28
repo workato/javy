@@ -4,7 +4,7 @@ use std::{collections::HashMap, str};
 use wasmtime::{AsContextMut, Engine, Linker};
 use wasmtime_wasi::{pipe::MemoryOutputPipe, WasiCtxBuilder};
 
-use crate::{CliPlugin, PluginKind};
+use crate::{CliPlugin, PluginKind, commands::JsOptionValue};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,24 +60,48 @@ pub(crate) struct JsConfigProperty {
     pub(crate) doc: String,
 }
 
-/// A collection of property names to whether they are enabled.
+/// A collection of property names to their values.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct JsConfig(HashMap<String, bool>);
+pub(crate) struct JsConfig(HashMap<String, JsOptionValue>);
 
 impl JsConfig {
     /// Create from a hash.
-    pub(crate) fn from_hash(configs: HashMap<String, bool>) -> Self {
+    pub(crate) fn from_hash(configs: HashMap<String, JsOptionValue>) -> Self {
         JsConfig(configs)
     }
 
     /// Encode as JSON.
     pub(crate) fn to_json(&self) -> Result<Vec<u8>> {
-        Ok(serde_json::to_vec(&self.0)?)
+        // Convert to a JSON-serializable format
+        let mut json_map = serde_json::Map::new();
+        for (key, value) in &self.0 {
+            match value {
+                JsOptionValue::Boolean(b) => {
+                    json_map.insert(key.clone(), serde_json::Value::Bool(*b));
+                }
+                JsOptionValue::Number(n) => {
+                    json_map.insert(key.clone(), serde_json::Value::Number((*n).into()));
+                }
+            }
+        }
+        Ok(serde_json::to_vec(&json_map)?)
     }
 
     #[cfg(test)]
-    /// Retrieve a value for a property name.
+    /// Retrieve a boolean value for a property name.
     pub(crate) fn get(&self, name: &str) -> Option<bool> {
-        self.0.get(name).copied()
+        match self.0.get(name) {
+            Some(JsOptionValue::Boolean(b)) => Some(*b),
+            _ => None,
+        }
+    }
+    
+    #[cfg(test)]
+    /// Retrieve a numeric value for a property name.
+    pub(crate) fn get_number(&self, name: &str) -> Option<u64> {
+        match self.0.get(name) {
+            Some(JsOptionValue::Number(n)) => Some(*n),
+            _ => None,
+        }
     }
 }

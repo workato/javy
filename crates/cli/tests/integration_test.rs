@@ -718,3 +718,89 @@ fn test_timers_function_callbacks(builder: &mut Builder) -> Result<()> {
     
     Ok(())
 }
+
+#[javy_cli_test(commands(not(Compile)))]
+fn test_wait_for_completion_enabled(builder: &mut Builder) -> Result<()> {
+    let mut runner = builder
+        .input("wait-for-completion.js")
+        .timers(true)
+        .event_loop(true)
+        .wait_for_completion(true)
+        .build()?;
+
+    let (output, _logs, fuel_consumed) = run(&mut runner, vec![]);
+    
+    let output_str = String::from_utf8(output)?;
+    
+    // Verify all async operations completed
+    assert!(output_str.contains("Testing wait-for-completion functionality"));
+    assert!(output_str.contains("All async operations scheduled"));
+    
+    // Test 1: Basic delayed timer
+    assert!(output_str.contains("Test 1: Delayed timer executed"));
+    
+    // Test 2: Multiple timers with different delays
+    assert!(output_str.contains("Test 2A: First timer"));
+    assert!(output_str.contains("Test 2B: Second timer"));
+    
+    // Test 3: Promise resolution
+    assert!(output_str.contains("Test 3: Promise resolved"));
+    
+    // Test 4: Nested timers
+    assert!(output_str.contains("Test 4A: Outer timer"));
+    assert!(output_str.contains("Test 4B: Nested timer"));
+    
+    // Should consume more fuel due to waiting and multiple timer executions
+    assert_fuel_consumed_within_threshold(500_000, fuel_consumed);
+    
+    Ok(())
+}
+
+#[javy_cli_test(commands(not(Compile)))]
+fn test_wait_for_completion_disabled(builder: &mut Builder) -> Result<()> {
+    let mut runner = builder
+        .input("wait-for-completion.js")
+        .timers(true)
+        .event_loop(true)
+        // wait_for_completion is false by default
+        .build()?;
+
+    let (output, _logs, fuel_consumed) = run(&mut runner, vec![]);
+    
+    let output_str = String::from_utf8(output)?;
+    
+    // Should see initial output but not delayed timers
+    assert!(output_str.contains("Testing wait-for-completion functionality"));
+    assert!(output_str.contains("All async operations scheduled"));
+    
+    // Test 3: Promise should still resolve (immediate)
+    assert!(output_str.contains("Test 3: Promise resolved"));
+    
+    // But delayed timers should NOT execute
+    assert!(!output_str.contains("Test 1: Delayed timer executed"));
+    assert!(!output_str.contains("Test 2A: First timer"));
+    assert!(!output_str.contains("Test 2B: Second timer"));
+    assert!(!output_str.contains("Test 4A: Outer timer"));
+    assert!(!output_str.contains("Test 4B: Nested timer"));
+    
+    // Should consume less fuel since timers don't execute
+    assert_fuel_consumed_within_threshold(300_000, fuel_consumed);
+    
+    Ok(())
+}
+
+#[javy_cli_test(commands(not(Compile)))]
+fn test_wait_for_completion_without_event_loop_fails(builder: &mut Builder) -> Result<()> {
+    // Test that wait-for-completion requires event loop
+    let mut runner = builder
+        .input("wait-for-completion.js")
+        .timers(true)
+        .wait_for_completion(true)
+        // event_loop is false
+        .build()?;
+    
+    let result = runner.exec(vec![]);
+    assert!(result.is_err(), "wait-for-completion should fail without event loop");
+    
+    Ok(())
+}

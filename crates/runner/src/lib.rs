@@ -84,6 +84,8 @@ pub struct Builder {
     timers: Option<bool>,
     /// Whether to redirect stdout to stderr.
     redirect_stdout_to_stderr: Option<bool>,
+    /// Whether to wait for async operations to complete before exiting.
+    wait_for_completion: Option<bool>,
     built: bool,
     /// Preload the module at path, using the given instance name.
     preload: Option<(String, PathBuf)>,
@@ -111,6 +113,7 @@ impl Default for Builder {
             event_loop: None,
             timers: None,
             redirect_stdout_to_stderr: None,
+            wait_for_completion: None,
             plugin: Plugin::Default,
         }
     }
@@ -177,6 +180,11 @@ impl Builder {
         self
     }
 
+    pub fn wait_for_completion(&mut self, enabled: bool) -> &mut Self {
+        self.wait_for_completion = Some(enabled);
+        self
+    }
+
     pub fn command(&mut self, command: JavyCommand) -> &mut Self {
         self.command = command;
         self
@@ -210,6 +218,7 @@ impl Builder {
             event_loop,
             timers,
             redirect_stdout_to_stderr,
+            wait_for_completion,
             built: _,
             preload,
             command,
@@ -238,7 +247,7 @@ impl Builder {
                 event_loop,
                 timers,
                 redirect_stdout_to_stderr,
-                preload,
+                wait_for_completion,
                 plugin,
             ),
         }
@@ -315,7 +324,7 @@ impl Runner {
         event_loop: Option<bool>,
         timers: Option<bool>,
         redirect_stdout_to_stderr: Option<bool>,
-        preload: Option<(String, PathBuf)>,
+        wait_for_completion: Option<bool>,
         plugin: Plugin,
     ) -> Result<Self> {
         // This directory is unique and will automatically get deleted
@@ -330,13 +339,14 @@ impl Runner {
             &wasm_file,
             &wit_file,
             &world,
-            preload.is_some(),
+            false, // static builds are never dynamic
             &javy_stream_io,
             &override_json_parse_and_stringify,
             &text_encoding,
             &event_loop,
             &timers,
             &redirect_stdout_to_stderr,
+            &wait_for_completion,
             &plugin,
         );
 
@@ -347,18 +357,11 @@ impl Runner {
         let engine = Self::setup_engine();
         let linker = Self::setup_linker(&engine)?;
 
-        let preload = preload
-            .map(|(name, path)| {
-                let module = fs::read(path)?;
-                Ok::<(String, Vec<u8>), anyhow::Error>((name, module))
-            })
-            .transpose()?;
-
         Ok(Self {
             wasm,
             linker,
             initial_fuel: u64::MAX,
-            preload,
+            preload: None, // static builds don't have preload
             plugin: Plugin::Default,
         })
     }
@@ -566,6 +569,7 @@ impl Runner {
         event_loop: &Option<bool>,
         timers: &Option<bool>,
         redirect_stdout_to_stderr: &Option<bool>,
+        wait_for_completion: &Option<bool>,
         plugin: &Plugin,
     ) -> Vec<String> {
         let mut args = vec![
@@ -621,6 +625,11 @@ impl Runner {
         if let Some(enabled) = *redirect_stdout_to_stderr {
             args.push("-J".to_string());
             args.push(format!("redirect-stdout-to-stderr={}", if enabled { "y" } else { "n" }));
+        }
+
+        if let Some(enabled) = *wait_for_completion {
+            args.push("-J".to_string());
+            args.push(format!("wait-for-completion={}", if enabled { "y" } else { "n" }));
         }
 
         if matches!(plugin, Plugin::User | Plugin::DefaultAsUser) {
