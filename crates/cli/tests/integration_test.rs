@@ -270,7 +270,7 @@ fn test_timers_basic(builder: &mut Builder) -> Result<()> {
         .event_loop(true)
         .build()?;
 
-    let (output, logs, fuel_consumed) = run(&mut runner, vec![]);
+    let (output, _logs, fuel_consumed) = run(&mut runner, vec![]);
     
     // Convert output to string for easier testing
     let output_str = String::from_utf8(output)?;
@@ -303,7 +303,7 @@ fn test_intervals_basic(builder: &mut Builder) -> Result<()> {
         .event_loop(true)
         .build()?;
 
-    let (output, logs, fuel_consumed) = run(&mut runner, vec![]);
+    let (output, _logs, fuel_consumed) = run(&mut runner, vec![]);
     
     let output_str = String::from_utf8(output)?;
     
@@ -329,7 +329,7 @@ fn test_intervals_basic(builder: &mut Builder) -> Result<()> {
 fn test_base64_functionality(builder: &mut Builder) -> Result<()> {
     let mut runner = builder.input("base64-basic.js").build()?;
 
-    let (output, logs, fuel_consumed) = run(&mut runner, vec![]);
+    let (output, _logs, fuel_consumed) = run(&mut runner, vec![]);
     
     let output_str = String::from_utf8(output)?;
     
@@ -501,6 +501,76 @@ fn test_base64_always_available(builder: &mut Builder) -> Result<()> {
     // Should work without any flags
     assert!(output_str.contains("Base64 tests completed"));
     assert!(output_str.contains("Round-trip test: PASS"));
+    
+    Ok(())
+}
+
+#[javy_cli_test]
+fn test_blob_functionality(builder: &mut Builder) -> Result<()> {
+    let mut runner = builder.input("blob-basic.js").build()?;
+
+    let (output, _logs, fuel_consumed) = run(&mut runner, vec![]);
+    
+    let output_str = String::from_utf8(output)?;
+    
+    // Verify Blob API availability and functionality
+    assert!(output_str.contains("Testing Blob and File APIs"));
+    
+    // Test 1: Basic Blob construction
+    assert!(output_str.contains("Blob construction: PASS"));
+    assert!(output_str.contains("Blob size: PASS"));
+    assert!(output_str.contains("Blob type: PASS"));
+    
+    // Test 2: Empty Blob
+    assert!(output_str.contains("Empty Blob size: PASS"));
+    assert!(output_str.contains("Empty Blob type: PASS"));
+    
+    // Test 3: Blob text() method
+    assert!(output_str.contains("Blob text(): PASS"));
+    
+    // Test 4: Blob slice() method
+    assert!(output_str.contains("Blob slice(0,5): PASS"));
+    assert!(output_str.contains("Blob slice(-6): PASS"));
+    assert!(output_str.contains("Blob slice with type: PASS"));
+    
+    // Test 5: Blob arrayBuffer() method
+    assert!(output_str.contains("Blob arrayBuffer(): PASS"));
+    
+    // Test 6: Blob bytes() method
+    assert!(output_str.contains("Blob bytes(): PASS"));
+    assert!(output_str.contains("Blob bytes length: PASS"));
+    
+    // Test 7: File construction
+    assert!(output_str.contains("File construction: PASS"));
+    assert!(output_str.contains("File name: PASS"));
+    assert!(output_str.contains("File size: PASS"));
+    assert!(output_str.contains("File type: PASS"));
+    assert!(output_str.contains("File lastModified: PASS"));
+    
+    // Test 8: File inheritance from Blob
+    assert!(output_str.contains("File text() inheritance: PASS"));
+    assert!(output_str.contains("File slice() inheritance: PASS"));
+    
+    // Test 9: Blob concatenation
+    assert!(output_str.contains("Blob concatenation: PASS"));
+    assert!(output_str.contains("Concatenated size: PASS"));
+    
+    // Test 10: Error handling
+    assert!(output_str.contains("File error handling: PASS"));
+    
+    // Test 11: Binary data handling
+    assert!(output_str.contains("Binary Blob size: PASS"));
+    assert!(output_str.contains("Binary Blob type: PASS"));
+    assert!(output_str.contains("Binary Blob text: PASS"));
+    
+    // Verify completion
+    assert!(output_str.contains("Blob and File API tests completed"));
+    
+    // Verify no test failures
+    assert!(!output_str.contains("FAIL"));
+    
+    // Blob API should be efficient - estimate based on complexity
+    assert_fuel_consumed_within_threshold(760_000, fuel_consumed);
     
     Ok(())
 }
