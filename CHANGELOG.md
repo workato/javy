@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.4-workato.5] - 2025-01-03
+
+### Added
+
+- **Complete Blob and File API Support**: Implemented full Web API compatible Blob and File constructors
+  - `new Blob(blobParts, options)` - Creates blob objects with support for string, ArrayBuffer, TypedArray, and Uint8Array inputs
+  - `new File(fileBits, fileName, options)` - Creates file objects extending Blob with name and lastModified properties
+  - **Methods**: `text()`, `slice(start, end, contentType)`, `arrayBuffer()`, `bytes()`
+  - **Properties**: `size`, `type`, `name` (File), `lastModified` (File)
+  - **Always Available**: No configuration flags required, works out of the box
+- **Comprehensive Test Coverage**: 12 unit tests and complete integration test suite
+  - Binary data handling with Uint8Array support
+  - Slice functionality with negative indices and bounds checking
+  - File inheritance from Blob with all methods and properties
+  - Error handling for invalid constructor arguments
+
+### Fixed
+
+- **Compiler Warnings**: Addressed all compiler warnings across the codebase
+  - Removed unnecessary `mut` keywords in console module tests (7 warnings)
+  - Prefixed unused `logs` variables with underscore in integration tests (4 warnings)
+  - Updated fuel consumption thresholds to match actual performance measurements
+- **Code Quality**: All main crates (javy, javy-cli, javy-runner) now compile warning-free
+
+### Changed
+
+- **Performance Benchmarks**: Updated Blob API performance baseline to ~760k fuel consumption
+- **Documentation**: Enhanced FACTS.md with complete Blob API status and usage examples
+
+### Technical Details
+
+- **Web Standards Compliance**: Follows MDN Web API specifications for Blob and File interfaces
+- **Memory Management**: Efficient reference counting with global HashMap-based blob storage
+- **JavaScript Integration**: Uses QuickJS bindings for seamless JS-Rust interop
+- **Architecture**: JavaScript constructors calling Rust helper functions for optimal performance
+
 ## [5.0.4-workato.4] - 2025-05-23
 
 ### Fixed
