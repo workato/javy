@@ -1,5 +1,5 @@
 use javy_plugin_api::{import_namespace, Config};
-use shared_config::SharedConfig;
+use shared_config::{SharedConfig, SharedConfigExtended};
 use std::io;
 use std::io::Read;
 use std::slice;
@@ -25,7 +25,7 @@ pub extern "C" fn initialize_runtime() {
     let mut config_bytes = vec![];
     let shared_config = match io::stdin().read_to_end(&mut config_bytes) {
         Ok(0) => None,
-        Ok(_) => Some(SharedConfig::parse_from_json(&config_bytes).unwrap()),
+        Ok(_) => Some(SharedConfigExtended::parse_extended_from_json(&config_bytes).unwrap()),
         Err(e) => panic!("Error reading from stdin: {e}"),
     };
     if let Some(shared_config) = shared_config {

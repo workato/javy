@@ -296,13 +296,20 @@ pub enum JsGroupValue {
     Help,
 }
 
+/// The value type for a runtime config option.
+#[derive(Debug, Clone)]
+pub enum JsOptionValue {
+    Boolean(bool),
+    Number(u64),
+}
+
 /// A runtime config group option.
 #[derive(Debug, Clone)]
 pub struct JsGroupOption {
     /// The property name used for the option.
     name: String,
-    /// Whether the config is enabled or not.
-    enabled: bool,
+    /// The value of the config option.
+    value: JsOptionValue,
 }
 
 #[derive(Debug, Clone)]
@@ -336,15 +343,29 @@ impl TypedValueParser for JsGroupOptionParser {
 
         let mut splits = val.splitn(2, '=');
         let key = splits.next().unwrap();
-        let value = match splits.next() {
-            Some("y") => true,
-            Some("n") => false,
-            None => true,
-            _ => return Err(clap::Error::new(clap::error::ErrorKind::InvalidValue)),
+        let value_str = splits.next();
+        
+        let option_value = match (key, value_str) {
+            // Special handling for wait-timeout-ms which expects a number
+            ("wait-timeout-ms", Some(num_str)) => {
+                match num_str.parse::<u64>() {
+                    Ok(num) => JsOptionValue::Number(num),
+                    Err(_) => return Err(clap::Error::new(clap::error::ErrorKind::InvalidValue)),
+                }
+            }
+            ("wait-timeout-ms", None) => {
+                return Err(clap::Error::new(clap::error::ErrorKind::InvalidValue));
+            }
+            // All other options are boolean
+            (_, Some("y")) => JsOptionValue::Boolean(true),
+            (_, Some("n")) => JsOptionValue::Boolean(false),
+            (_, None) => JsOptionValue::Boolean(true),
+            (_, Some(_)) => return Err(clap::Error::new(clap::error::ErrorKind::InvalidValue)),
         };
+        
         Ok(JsGroupValue::Option(JsGroupOption {
             name: key.to_string(),
-            enabled: value,
+            value: option_value,
         }))
     }
 }
@@ -374,20 +395,24 @@ impl JsConfig {
                         &supported_properties
                             .into_iter()
                             .map(|prop| OptionMeta {
-                                name: prop.name,
-                                help: "[=y|n]".to_string(),
+                                name: prop.name.clone(),
+                                help: if prop.name == "wait-timeout-ms" {
+                                    "=<milliseconds>".to_string()
+                                } else {
+                                    "[=y|n]".to_string()
+                                },
                                 doc: prop.doc,
                             })
                             .collect::<Vec<_>>(),
                     );
                     std::process::exit(0);
                 }
-                JsGroupValue::Option(JsGroupOption { name, enabled }) => {
+                JsGroupValue::Option(JsGroupOption { name, value }) => {
                     if supported_names.contains(name.as_str()) {
                         if config.contains_key(&name) {
                             bail!("{name} can only be specified once");
                         }
-                        config.insert(name, enabled);
+                        config.insert(name, value);
                     } else {
                         Cli::command()
                             .error(
@@ -401,6 +426,16 @@ impl JsConfig {
                 }
             }
         }
+        
+        // Validate configuration dependencies
+        if let (Some(wait_completion), event_loop) = (config.get("wait-for-completion"), config.get("event-loop")) {
+            if let JsOptionValue::Boolean(true) = wait_completion {
+                if !matches!(event_loop, Some(JsOptionValue::Boolean(true))) {
+                    bail!("wait-for-completion requires event-loop to be enabled. Use: -J event-loop=y -J wait-for-completion=y");
+                }
+            }
+        }
+        
         Ok(JsConfig::from_hash(config))
     }
 }
@@ -410,7 +445,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::{
-        commands::{JsGroupOption, JsGroupValue},
+        commands::{JsGroupOption, JsGroupValue, JsOptionValue},
         js_config::JsConfig,
         plugin::PLUGIN_MODULE,
         CliPlugin, Plugin, PluginKind,
@@ -432,7 +467,7 @@ mod tests {
             &plugin,
             vec![JsGroupValue::Option(JsGroupOption {
                 name: "javy-stream-io".to_string(),
-                enabled: false,
+                value: JsOptionValue::Boolean(false),
             })],
         )?;
         assert_eq!(group.get("javy-stream-io"), Some(false));
@@ -441,7 +476,7 @@ mod tests {
             &plugin,
             vec![JsGroupValue::Option(JsGroupOption {
                 name: "javy-stream-io".to_string(),
-                enabled: true,
+                value: JsOptionValue::Boolean(true),
             })],
         )?;
         assert_eq!(group.get("javy-stream-io"), Some(true));
@@ -450,7 +485,7 @@ mod tests {
             &plugin,
             vec![JsGroupValue::Option(JsGroupOption {
                 name: "simd-json-builtins".to_string(),
-                enabled: false,
+                value: JsOptionValue::Boolean(false),
             })],
         )?;
         assert_eq!(group.get("simd-json-builtins"), Some(false));
@@ -459,7 +494,7 @@ mod tests {
             &plugin,
             vec![JsGroupValue::Option(JsGroupOption {
                 name: "simd-json-builtins".to_string(),
-                enabled: true,
+                value: JsOptionValue::Boolean(true),
             })],
         )?;
         assert_eq!(group.get("simd-json-builtins"), Some(true));
@@ -468,7 +503,7 @@ mod tests {
             &plugin,
             vec![JsGroupValue::Option(JsGroupOption {
                 name: "text-encoding".to_string(),
-                enabled: false,
+                value: JsOptionValue::Boolean(false),
             })],
         )?;
         assert_eq!(group.get("text-encoding"), Some(false));
@@ -477,7 +512,7 @@ mod tests {
             &plugin,
             vec![JsGroupValue::Option(JsGroupOption {
                 name: "text-encoding".to_string(),
-                enabled: true,
+                value: JsOptionValue::Boolean(true),
             })],
         )?;
         assert_eq!(group.get("text-encoding"), Some(true));
@@ -487,15 +522,15 @@ mod tests {
             vec![
                 JsGroupValue::Option(JsGroupOption {
                     name: "javy-stream-io".to_string(),
-                    enabled: false,
+                    value: JsOptionValue::Boolean(false),
                 }),
                 JsGroupValue::Option(JsGroupOption {
                     name: "simd-json-builtins".to_string(),
-                    enabled: false,
+                    value: JsOptionValue::Boolean(false),
                 }),
                 JsGroupValue::Option(JsGroupOption {
                     name: "text-encoding".to_string(),
-                    enabled: false,
+                    value: JsOptionValue::Boolean(false),
                 }),
             ],
         )?;
@@ -605,11 +640,11 @@ mod tests {
             vec![
                 JsGroupValue::Option(JsGroupOption {
                     name: "javy-stream-io".to_string(),
-                    enabled: false,
+                    value: JsOptionValue::Boolean(false),
                 }),
                 JsGroupValue::Option(JsGroupOption {
                     name: "javy-stream-io".to_string(),
-                    enabled: true,
+                    value: JsOptionValue::Boolean(true),
                 }),
             ],
         );
@@ -617,5 +652,103 @@ mod tests {
             result.err().unwrap().to_string(),
             "javy-stream-io can only be specified once"
         );
+    }
+
+    #[test]
+    fn wait_for_completion_requires_event_loop() {
+        let plugin = CliPlugin::new(Plugin::new(PLUGIN_MODULE.into()), PluginKind::Default);
+        
+        // Test: wait-for-completion=y without event-loop should fail
+        let result = JsConfig::from_group_values(
+            &plugin,
+            vec![JsGroupValue::Option(JsGroupOption {
+                name: "wait-for-completion".to_string(),
+                value: JsOptionValue::Boolean(true),
+            })],
+        );
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("wait-for-completion requires event-loop to be enabled"));
+        
+        // Test: wait-for-completion=y with event-loop=n should fail
+        let result = JsConfig::from_group_values(
+            &plugin,
+            vec![
+                JsGroupValue::Option(JsGroupOption {
+                    name: "event-loop".to_string(),
+                    value: JsOptionValue::Boolean(false),
+                }),
+                JsGroupValue::Option(JsGroupOption {
+                    name: "wait-for-completion".to_string(),
+                    value: JsOptionValue::Boolean(true),
+                }),
+            ],
+        );
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("wait-for-completion requires event-loop to be enabled"));
+        
+        // Test: wait-for-completion=y with event-loop=y should succeed
+        let result = JsConfig::from_group_values(
+            &plugin,
+            vec![
+                JsGroupValue::Option(JsGroupOption {
+                    name: "event-loop".to_string(),
+                    value: JsOptionValue::Boolean(true),
+                }),
+                JsGroupValue::Option(JsGroupOption {
+                    name: "wait-for-completion".to_string(),
+                    value: JsOptionValue::Boolean(true),
+                }),
+            ],
+        );
+        assert!(result.is_ok());
+        
+        // Test: wait-for-completion=n should always succeed regardless of event-loop
+        let result = JsConfig::from_group_values(
+            &plugin,
+            vec![JsGroupValue::Option(JsGroupOption {
+                name: "wait-for-completion".to_string(),
+                value: JsOptionValue::Boolean(false),
+            })],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn wait_timeout_ms_parameter_parsing() {
+        let plugin = CliPlugin::new(Plugin::new(PLUGIN_MODULE.into()), PluginKind::Default);
+        
+        // Test: wait-timeout-ms with numeric value should succeed
+        let result = JsConfig::from_group_values(
+            &plugin,
+            vec![
+                JsGroupValue::Option(JsGroupOption {
+                    name: "event-loop".to_string(),
+                    value: JsOptionValue::Boolean(true),
+                }),
+                JsGroupValue::Option(JsGroupOption {
+                    name: "wait-for-completion".to_string(),
+                    value: JsOptionValue::Boolean(true),
+                }),
+                JsGroupValue::Option(JsGroupOption {
+                    name: "wait-timeout-ms".to_string(),
+                    value: JsOptionValue::Number(5000),
+                }),
+            ],
+        );
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.get_number("wait-timeout-ms"), Some(5000));
+        
+        // Test: wait-timeout-ms with different numeric values
+        let result = JsConfig::from_group_values(
+            &plugin,
+            vec![JsGroupValue::Option(JsGroupOption {
+                name: "wait-timeout-ms".to_string(),
+                value: JsOptionValue::Number(1000),
+            })],
+        );
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.get_number("wait-timeout-ms"), Some(1000));
     }
 }
